@@ -38,7 +38,7 @@ spec:
         - name: ghcr-secret
       containers:
         - name: backend
-          image: ghcr.io/shubhamprakash681/hu-inventory-be:sha-d5bc662
+          image: ghcr.io/shubhamprakash681/hu-devops-26-nov-sprakash8/hu-inventory-be:sha-b340542
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
