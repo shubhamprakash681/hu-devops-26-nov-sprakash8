@@ -181,7 +181,7 @@ This section describes the automated CI pipeline implemented in `.github/workflo
    - Export findings to SARIF format (`semgrep-be.sarif`).
 5. **Container Image Vulnerability Scan (Trivy)**:
    - Build the container image locally first, tagged with the commit SHA (`${{ github.sha }}`).
-   - Run `aquasecurity/trivy-action@0.29.0` against the freshly built local image before any push occurs.
+   - Run `aquasecurity/trivy-action@master` against the freshly built local image before any push occurs.
    - Generate full SARIF report (`trivy-be.sarif`, `trivy-fe.sarif`).
    - Enforce security gate with `exit-code: '1'` on `severity: 'HIGH,CRITICAL'`.
 6. **Strict Gate Policy**:

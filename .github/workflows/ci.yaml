@@ -139,7 +139,7 @@ jobs:
 
       # Stage 4: Container Image Scan (Trivy scan before push)
       - name: Scan Backend Image with Trivy (Report Generation)
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@master
         if: always()
         with:
           image-ref: ${{ env.BE_IMAGE_URI }}
@@ -148,7 +148,7 @@ jobs:
           severity: ${{ env.TRIVY_SEVERITY }}
 
       - name: Enforce Trivy Security Gate
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.BE_IMAGE_URI }}
           format: 'table'
@@ -257,7 +257,7 @@ jobs:
 
       # Stage 4: Container Image Scan (Trivy scan before push)
       - name: Scan Frontend Image with Trivy (SARIF Report)
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@master
         if: always()
         with:
           image-ref: ${{ env.FE_IMAGE_URI }}
@@ -266,7 +266,7 @@ jobs:
           severity: ${{ env.TRIVY_SEVERITY }}
 
       - name: Enforce Trivy Security Gate
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.FE_IMAGE_URI }}
           format: 'table'
