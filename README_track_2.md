@@ -95,6 +95,128 @@ This document lists the steps followed for each task. The screenshot for each ta
 
 | Image | Tag | Final Size |
 |-------|-----|------------|
-| myapp-backend | 1.0 | `<fill in>` |
-| myapp-frontend | 1.0 | `<fill in>` |
-| postgres | 16-alpine | `<fill in>` |
+| app-backend (myapp-backend) | latest / 1.0 | 209MB |
+| app-frontend (myapp-frontend) | latest / 1.0 | 74.4MB |
+| postgres | 15 / 16-alpine | 659MB |
+
+---
+
+# Track 2 Q2 Continuous Integration (GitHub Actions) - Steps
+
+## Question 2: Continuous Integration (GitHub Actions)
+**Part A: CI Pipeline, Security Gates, Scoped Triggers, and GHCR Publishing**
+
+This section describes the automated CI pipeline implemented in `.github/workflows/ci.yaml` for both the Frontend (FE) and Backend (BE).
+
+---
+
+## Task 1: Pipeline Triggers and Path Scoping
+
+### Steps
+
+1. Configure GitHub Actions workflow triggers on `push` and `pull_request` targeting the `main` branch.
+2. Implement change detection using `dorny/paths-filter@v3` in a dedicated `detect-changes` job.
+3. Define granular path filters:
+   - `be`: monitors changes in `app/be/**` and `.github/workflows/ci.yaml`.
+   - `fe`: monitors changes in `app/fe/**` and `.github/workflows/ci.yaml`.
+4. Add conditional execution gates to downstream jobs:
+   - `backend-ci` executes only when `needs.detect-changes.outputs.be == 'true'` (or manual `workflow_dispatch`).
+   - `frontend-ci` executes only when `needs.detect-changes.outputs.fe == 'true'` (or manual `workflow_dispatch`).
+5. When only FE files are modified, the backend pipeline is skipped; when only BE files are modified, the frontend pipeline is skipped.
+
+---
+
+## Task 2: Parameterize Environment Variables and Pipeline Configuration
+
+### Steps
+
+1. Eliminate all hardcoded environment values and magic strings from workflow steps.
+2. Define centralized workflow-level `env` variables:
+   - `REGISTRY`: `ghcr.io` (GitHub Container Registry)
+   - `BE_IMAGE_NAME`: `hu-inventory-be`
+   - `FE_IMAGE_NAME`: `hu-inventory-fe`
+   - `BE_DIR`: `app/be`
+   - `FE_DIR`: `app/fe`
+   - `NODE_VERSION`: `'18'`
+   - `TRIVY_SEVERITY`: `'HIGH,CRITICAL'`
+   - `GRYPE_SEVERITY`: `'high'`
+   - `REPORTS_DIR`: `reports/scans`
+3. Parameterize dynamic metadata per run using GitHub context variables (`${{ github.sha }}`, `${{ github.repository }}`, `${{ github.actor }}`).
+4. Normalize repository name to lowercase at runtime (`REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')`) to guarantee standard OCI and GHCR compliance.
+
+---
+
+## Task 3: Implement Automated Lint, Unit Test, and Build Stages
+
+### Steps
+
+1. **Backend (`backend-ci`)**:
+   - Check out code with full history (`actions/checkout@v4` with `fetch-depth: 0`).
+   - Setup Node.js runtime using pinned version `${{ env.NODE_VERSION }}` with npm dependency caching (`actions/setup-node@v4`).
+   - Run clean dependency installation using `npm ci`.
+   - Execute native test suite using `npm test` (`node --test test/`), validating all 15 unit tests across endpoints (`/health`, `/health/db`, auth, items, greet, calc, redirect).
+2. **Frontend (`frontend-ci`)**:
+   - Check out repository and configure Node.js environment.
+   - Run clean dependency installation with `npm ci`.
+   - Test production build compilation using `npm run build` with Vite, ensuring no bundling or syntax errors exist.
+
+---
+
+## Task 4: Integrate Security Scans and Strict Failure Gates
+
+### Steps
+
+1. **Dockerfile Linting (Hadolint)**:
+   - Execute `hadolint/hadolint-action@v3.1.0` against `app/be/Dockerfile` and `app/fe/Dockerfile`.
+   - Set `failure-threshold: error` and export results in JSON format to `${{ env.REPORTS_DIR }}/hadolint-*.json`.
+2. **Secrets Scanning (TruffleHog)**:
+   - Execute `trufflesecurity/trufflehog@main` scanning the repository commit history for verified credentials.
+   - Enforce `--only-verified` to validate active leaked credentials without false alarms.
+3. **Software Composition Analysis (Grype SCA)**:
+   - Run `anchore/scan-action@v3` scanning backend and frontend dependencies.
+   - Configure `severity-cutoff: high` and `fail-build: true` to break the pipeline on any High or Critical dependency vulnerability.
+   - Export reports in SARIF format (`grype-be.sarif`, `grype-fe.sarif`).
+4. **Static Application Security Testing (Semgrep SAST)**:
+   - Execute Semgrep container scanning application source code with `--config=auto` and `--error`.
+   - Export findings to SARIF format (`semgrep-be.sarif`).
+5. **Container Image Vulnerability Scan (Trivy)**:
+   - Build the container image locally first, tagged with the commit SHA (`${{ github.sha }}`).
+   - Run `aquasecurity/trivy-action@0.29.0` against the freshly built local image before any push occurs.
+   - Generate full SARIF report (`trivy-be.sarif`, `trivy-fe.sarif`).
+   - Enforce security gate with `exit-code: '1'` on `severity: 'HIGH,CRITICAL'`.
+6. **Strict Gate Policy**:
+   - Enforce zero tolerance: strictly NO `continue-on-error`, swallowed exit codes (`|| true`), or ignore files to hide scan failures.
+
+---
+
+## Task 5: Authenticate with GHCR and Push Images Tagged with Commit SHA
+
+### Steps
+
+1. Authenticate to GitHub Container Registry (`ghcr.io`) using `docker/login-action@v3` with `${{ secrets.GITHUB_TOKEN }}`.
+2. Restrict push actions to verified events (`if: github.event_name != 'pull_request'`), ensuring pull requests run build and scan validation without pushing untrusted artifacts.
+3. Adhere to standard tagging practices:
+   - Primary immutable tag: Full 40-character commit SHA (`${{ github.sha }}`).
+   - Secondary semantic tag: Short commit SHA (`sha-${GITHUB_SHA::7}`).
+   - Explicitly avoid the `latest` tag.
+4. Push only after all prior gates (lint, test, Dockerfile lint, TruffleHog, Grype, Semgrep, and Trivy) succeed.
+
+---
+
+## Task 6: Publish Tool-Native Reports and Record Stored GHCR Images
+
+### Steps
+
+1. Use `actions/upload-artifact@v4` with `if: always()` to archive all generated SARIF and JSON scan reports (`hadolint`, `trivy`, `grype`, `semgrep`).
+2. Write execution metadata and image identifiers directly to `$GITHUB_STEP_SUMMARY`.
+3. Record the generated image URIs and tag patterns in the registry record table below:
+
+### GHCR Stored Images Record
+
+| Component | Target Registry | Full Image Reference (Commit SHA Tag) | Semantic Short Tag |
+|---|---|---|---|
+| **Backend** | `ghcr.io` | `ghcr.io/<owner>/hu-inventory-be:<commit-sha>` | `ghcr.io/<owner>/hu-inventory-be:sha-<short-sha>` |
+| **Frontend** | `ghcr.io` | `ghcr.io/<owner>/hu-inventory-fe:<commit-sha>` | `ghcr.io/<owner>/hu-inventory-fe:sha-<short-sha>` |
+
+*(Note: In automated runs, `<owner>` is automatically resolved from `${{ github.repository }}` in lowercase, and `<commit-sha>` matches `${{ github.sha }}` without using `latest`)*
+

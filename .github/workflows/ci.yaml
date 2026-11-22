@@ -1,0 +1,309 @@
+name: Continuous Integration (CI)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'app/be/**'
+      - 'app/fe/**'
+      - '.github/workflows/ci.yaml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'app/be/**'
+      - 'app/fe/**'
+      - '.github/workflows/ci.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+  actions: read
+
+env:
+  REGISTRY: ghcr.io
+  BE_IMAGE_NAME: hu-inventory-be
+  FE_IMAGE_NAME: hu-inventory-fe
+  BE_DIR: app/be
+  FE_DIR: app/fe
+  NODE_VERSION: '18'
+  TRIVY_SEVERITY: 'HIGH,CRITICAL'
+  GRYPE_SEVERITY: 'high'
+  REPORTS_DIR: reports/scans
+
+jobs:
+  detect-changes:
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    outputs:
+      be: ${{ steps.filter.outputs.be }}
+      fe: ${{ steps.filter.outputs.fe }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Check Changed Paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            be:
+              - 'app/be/**'
+              - '.github/workflows/ci.yaml'
+            fe:
+              - 'app/fe/**'
+              - '.github/workflows/ci.yaml'
+
+  backend-ci:
+    name: Backend CI (Lint, Test, Scan, Build, Push)
+    needs: detect-changes
+    if: needs.detect-changes.outputs.be == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: '${{ env.BE_DIR }}/package-lock.json'
+
+      - name: Create Reports Directory
+        run: mkdir -p ${{ env.REPORTS_DIR }}
+
+      # Stage 1: Lint & Test
+      - name: Install Backend Dependencies
+        run: npm ci
+        working-directory: ${{ env.BE_DIR }}
+
+      - name: Run Backend Unit Tests
+        run: npm test
+        working-directory: ${{ env.BE_DIR }}
+
+      # Stage 2: Scan (Secrets, Hadolint, Grype SCA, Semgrep SAST)
+      - name: Lint Backend Dockerfile with Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ env.BE_DIR }}/Dockerfile
+          failure-threshold: error
+          format: json
+          output-file: ${{ env.REPORTS_DIR }}/hadolint-be.json
+
+      - name: Scan Secrets with TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
+
+      - name: Scan Dependencies with Grype (SCA)
+        uses: anchore/scan-action@v3
+        with:
+          path: ${{ env.BE_DIR }}
+          severity-cutoff: ${{ env.GRYPE_SEVERITY }}
+          fail-build: true
+          output-format: sarif
+          output-file: ${{ env.REPORTS_DIR }}/grype-be.sarif
+
+      - name: Run SAST with Semgrep
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            semgrep/semgrep:latest \
+            semgrep scan --config=auto --sarif --output=/src/${{ env.REPORTS_DIR }}/semgrep-be.sarif /src/${{ env.BE_DIR }} --error
+
+      # Stage 3: Build Image (Tagged with commit SHA, no 'latest')
+      - name: Compute Image Metadata
+        id: meta
+        run: |
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "BE_IMAGE_URI=${{ env.REGISTRY }}/${REPO_LOWER}/${{ env.BE_IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_ENV
+          echo "BE_IMAGE_URI_SHORT=${{ env.REGISTRY }}/${REPO_LOWER}/${{ env.BE_IMAGE_NAME }}:sha-${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Build Backend Container Image
+        run: |
+          docker build \
+            --file ${{ env.BE_DIR }}/Dockerfile \
+            --tag ${{ env.BE_IMAGE_URI }} \
+            --tag ${{ env.BE_IMAGE_URI_SHORT }} \
+            ${{ env.BE_DIR }}
+
+      # Stage 4: Container Image Scan (Trivy scan before push)
+      - name: Scan Backend Image with Trivy (Report Generation)
+        uses: aquasecurity/trivy-action@0.29.0
+        if: always()
+        with:
+          image-ref: ${{ env.BE_IMAGE_URI }}
+          format: 'sarif'
+          output: ${{ env.REPORTS_DIR }}/trivy-be.sarif
+          severity: ${{ env.TRIVY_SEVERITY }}
+
+      - name: Enforce Trivy Security Gate
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ env.BE_IMAGE_URI }}
+          format: 'table'
+          exit-code: '1'
+          severity: ${{ env.TRIVY_SEVERITY }}
+
+      # Stage 5: Push Image to GHCR (Only after all scan gates have passed)
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Backend Image to GHCR
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push ${{ env.BE_IMAGE_URI }}
+          docker push ${{ env.BE_IMAGE_URI_SHORT }}
+
+      # Stage 6: Publish Reports & Summary
+      - name: Publish Security and Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: be-security-reports-${{ github.sha }}
+          path: ${{ env.REPORTS_DIR }}/
+          if-no-files-found: warn
+
+      - name: Record Backend Image Info in Job Summary
+        if: always()
+        run: |
+          echo "### 🚀 GHCR Stored Backend Image" >> $GITHUB_STEP_SUMMARY
+          echo "| Attribute | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Registry** | \`${{ env.REGISTRY }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Full Tag** | \`${{ env.BE_IMAGE_URI }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Short Tag** | \`${{ env.BE_IMAGE_URI_SHORT }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit SHA** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+
+  frontend-ci:
+    name: Frontend CI (Lint, Test, Scan, Build, Push)
+    needs: detect-changes
+    if: needs.detect-changes.outputs.fe == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: '${{ env.FE_DIR }}/package-lock.json'
+
+      - name: Create Reports Directory
+        run: mkdir -p ${{ env.REPORTS_DIR }}
+
+      # Stage 1: Lint & Test / Build Verification
+      - name: Install Frontend Dependencies
+        run: npm ci
+        working-directory: ${{ env.FE_DIR }}
+
+      - name: Test Frontend Production Build
+        run: npm run build
+        working-directory: ${{ env.FE_DIR }}
+
+      # Stage 2: Scan (Hadolint, Grype SCA)
+      - name: Lint Frontend Dockerfile with Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ env.FE_DIR }}/Dockerfile
+          failure-threshold: error
+          format: json
+          output-file: ${{ env.REPORTS_DIR }}/hadolint-fe.json
+
+      - name: Scan Dependencies with Grype (SCA)
+        uses: anchore/scan-action@v3
+        with:
+          path: ${{ env.FE_DIR }}
+          severity-cutoff: ${{ env.GRYPE_SEVERITY }}
+          fail-build: true
+          output-format: sarif
+          output-file: ${{ env.REPORTS_DIR }}/grype-fe.sarif
+
+      # Stage 3: Build Image (Tagged with commit SHA, no 'latest')
+      - name: Compute Image Metadata
+        id: meta
+        run: |
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "FE_IMAGE_URI=${{ env.REGISTRY }}/${REPO_LOWER}/${{ env.FE_IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_ENV
+          echo "FE_IMAGE_URI_SHORT=${{ env.REGISTRY }}/${REPO_LOWER}/${{ env.FE_IMAGE_NAME }}:sha-${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Build Frontend Container Image
+        run: |
+          docker build \
+            --file ${{ env.FE_DIR }}/Dockerfile \
+            --tag ${{ env.FE_IMAGE_URI }} \
+            --tag ${{ env.FE_IMAGE_URI_SHORT }} \
+            ${{ env.FE_DIR }}
+
+      # Stage 4: Container Image Scan (Trivy scan before push)
+      - name: Scan Frontend Image with Trivy (SARIF Report)
+        uses: aquasecurity/trivy-action@0.29.0
+        if: always()
+        with:
+          image-ref: ${{ env.FE_IMAGE_URI }}
+          format: 'sarif'
+          output: ${{ env.REPORTS_DIR }}/trivy-fe.sarif
+          severity: ${{ env.TRIVY_SEVERITY }}
+
+      - name: Enforce Trivy Security Gate
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ env.FE_IMAGE_URI }}
+          format: 'table'
+          exit-code: '1'
+          severity: ${{ env.TRIVY_SEVERITY }}
+
+      # Stage 5: Push Image to GHCR (Only after all scan gates have passed)
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Frontend Image to GHCR
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push ${{ env.FE_IMAGE_URI }}
+          docker push ${{ env.FE_IMAGE_URI_SHORT }}
+
+      # Stage 6: Publish Reports & Summary
+      - name: Publish Security and Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fe-security-reports-${{ github.sha }}
+          path: ${{ env.REPORTS_DIR }}/
+          if-no-files-found: warn
+
+      - name: Record Frontend Image Info in Job Summary
+        if: always()
+        run: |
+          echo "### 🚀 GHCR Stored Frontend Image" >> $GITHUB_STEP_SUMMARY
+          echo "| Attribute | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Registry** | \`${{ env.REGISTRY }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Full Tag** | \`${{ env.FE_IMAGE_URI }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Short Tag** | \`${{ env.FE_IMAGE_URI_SHORT }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit SHA** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
