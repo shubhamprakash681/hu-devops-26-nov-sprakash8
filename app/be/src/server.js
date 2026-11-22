@@ -10,7 +10,7 @@ async function main() {
 
   await waitForDb(pool);
   await initSchema(pool);
-  console.log('DB schema ready');
+  console.log('🚀 DB schema ready');
 }
 
 main().catch((err) => {
