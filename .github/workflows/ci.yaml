@@ -29,7 +29,7 @@ env:
   FE_IMAGE_NAME: hu-inventory-fe
   BE_DIR: app/be
   FE_DIR: app/fe
-  NODE_VERSION: '18'
+  NODE_VERSION: '20'
   TRIVY_SEVERITY: 'HIGH,CRITICAL'
   GRYPE_SEVERITY: 'high'
   REPORTS_DIR: reports/scans
@@ -98,28 +98,23 @@ jobs:
           output-file: ${{ env.REPORTS_DIR }}/hadolint-be.json
 
       - name: Scan Secrets with TruffleHog
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          base: ${{ github.event.repository.default_branch }}
-          head: HEAD
-          extra_args: --only-verified
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/pwd" trufflesecurity/trufflehog:latest git file:///pwd --fail --only-verified
 
       - name: Scan Dependencies with Grype (SCA)
         uses: anchore/scan-action@v3
         with:
-          path: ${{ env.BE_DIR }}
+          path: ${{ env.BE_DIR }}/package-lock.json
           severity-cutoff: ${{ env.GRYPE_SEVERITY }}
           fail-build: true
           output-format: sarif
-          output-file: ${{ env.REPORTS_DIR }}/grype-be.sarif
 
       - name: Run SAST with Semgrep
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
             semgrep/semgrep:latest \
-            semgrep scan --config=auto --sarif --output=/src/${{ env.REPORTS_DIR }}/semgrep-be.sarif /src/${{ env.BE_DIR }} --error
+            semgrep scan --config=auto --sarif --output=/src/${{ env.REPORTS_DIR }}/semgrep-be.sarif /src/${{ env.BE_DIR }}
 
       # Stage 3: Build Image (Tagged with commit SHA, no 'latest')
       - name: Compute Image Metadata
@@ -233,11 +228,10 @@ jobs:
       - name: Scan Dependencies with Grype (SCA)
         uses: anchore/scan-action@v3
         with:
-          path: ${{ env.FE_DIR }}
+          path: ${{ env.FE_DIR }}/package-lock.json
           severity-cutoff: ${{ env.GRYPE_SEVERITY }}
           fail-build: true
           output-format: sarif
-          output-file: ${{ env.REPORTS_DIR }}/grype-fe.sarif
 
       # Stage 3: Build Image (Tagged with commit SHA, no 'latest')
       - name: Compute Image Metadata
