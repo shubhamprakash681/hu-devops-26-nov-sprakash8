@@ -102,12 +102,17 @@ jobs:
           docker run --rm -v "${{ github.workspace }}:/pwd" trufflesecurity/trufflehog:latest git file:///pwd --fail --only-verified
 
       - name: Scan Dependencies with Grype (SCA)
-        uses: anchore/scan-action@v3
+        uses: anchore/scan-action@v7
+        id: grype-scan-be
         with:
           path: ${{ env.BE_DIR }}
           severity-cutoff: ${{ env.GRYPE_SEVERITY }}
           fail-build: true
           output-format: sarif
+
+      - name: Save Grype Backend SARIF Report
+        if: always() && steps.grype-scan-be.outputs.sarif != ''
+        run: cp "${{ steps.grype-scan-be.outputs.sarif }}" "${{ env.REPORTS_DIR }}/grype-be.sarif"
 
       - name: Run SAST with Semgrep
         run: |
@@ -225,12 +230,17 @@ jobs:
           output-file: ${{ env.REPORTS_DIR }}/hadolint-fe.json
 
       - name: Scan Dependencies with Grype (SCA)
-        uses: anchore/scan-action@v3
+        uses: anchore/scan-action@v7
+        id: grype-scan-fe
         with:
           path: ${{ env.FE_DIR }}
           severity-cutoff: ${{ env.GRYPE_SEVERITY }}
           fail-build: true
           output-format: sarif
+
+      - name: Save Grype Frontend SARIF Report
+        if: always() && steps.grype-scan-fe.outputs.sarif != ''
+        run: cp "${{ steps.grype-scan-fe.outputs.sarif }}" "${{ env.REPORTS_DIR }}/grype-fe.sarif"
 
       # Stage 3: Build Image (Tagged with commit SHA, no 'latest')
       - name: Compute Image Metadata

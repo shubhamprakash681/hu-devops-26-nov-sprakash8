@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-secret
+type: Opaque
+stringData:
+  PORT: "8080"
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_USER: "inventory_user"
+  DB_PASSWORD: "inventory_pass_123"
+  DB_NAME: "inventory_db"
+  JWT_SECRET: "dev_jwt_secret_key_super_secure_12345"
+  DB_CONNECT_RETRIES: "30"
+  DB_CONNECT_DELAY_MS: "2000"
+  SEED_ADMIN_USERNAME: "admin"
+  SEED_ADMIN_PASSWORD: "admin123"
+  SEED_TRAINEE_USERNAME: "trainee"
+  SEED_TRAINEE_PASSWORD: "trainee123"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels:
+    app: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+        - name: backend
+          image: ghcr.io/shubhamprakash681/hu-inventory-be:sha-d5bc662
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - secretRef:
+                name: backend-secret
+          readinessProbe:
+            httpGet:
+              path: /health/db
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    app: backend
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
