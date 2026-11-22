@@ -104,7 +104,7 @@ jobs:
       - name: Scan Dependencies with Grype (SCA)
         uses: anchore/scan-action@v3
         with:
-          path: ${{ env.BE_DIR }}/package-lock.json
+          path: ${{ env.BE_DIR }}
           severity-cutoff: ${{ env.GRYPE_SEVERITY }}
           fail-build: true
           output-format: sarif
@@ -135,7 +135,6 @@ jobs:
       # Stage 4: Container Image Scan (Trivy scan before push)
       - name: Scan Backend Image with Trivy (Report Generation)
         uses: aquasecurity/trivy-action@master
-        if: always()
         with:
           image-ref: ${{ env.BE_IMAGE_URI }}
           format: 'sarif'
@@ -228,7 +227,7 @@ jobs:
       - name: Scan Dependencies with Grype (SCA)
         uses: anchore/scan-action@v3
         with:
-          path: ${{ env.FE_DIR }}/package-lock.json
+          path: ${{ env.FE_DIR }}
           severity-cutoff: ${{ env.GRYPE_SEVERITY }}
           fail-build: true
           output-format: sarif
@@ -252,7 +251,6 @@ jobs:
       # Stage 4: Container Image Scan (Trivy scan before push)
       - name: Scan Frontend Image with Trivy (SARIF Report)
         uses: aquasecurity/trivy-action@master
-        if: always()
         with:
           image-ref: ${{ env.FE_IMAGE_URI }}
           format: 'sarif'
